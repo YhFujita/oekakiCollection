@@ -510,6 +510,36 @@
         const fish = body && body._fish;
         if (!fish) return;
 
+        const width = render.options.width;
+        const height = render.options.height;
+        const r = typeof body.circleRadius === 'number' ? body.circleRadius : 25;
+        const margin = r + 8;
+        const px = body.position.x;
+        const py = body.position.y;
+
+        // 画面端に近づいたら、反対方向へ向き直して「止まらない」ようにする
+        const nearLeft = px < margin;
+        const nearRight = px > width - margin;
+        const nearTop = py < margin;
+        const nearBottom = py > height - margin;
+
+        if (nearLeft || nearRight || nearTop || nearBottom) {
+          if (nearLeft) fish.angle = (Math.random() - 0.5) * 0.6 + 0; // 右へ
+          else if (nearRight) fish.angle = Math.PI + (Math.random() - 0.5) * 0.6; // 左へ
+          else if (nearTop) fish.angle = Math.PI / 2 + (Math.random() - 0.5) * 0.6; // 下へ
+          else if (nearBottom) fish.angle = (Math.PI * 3) / 2 + (Math.random() - 0.5) * 0.6; // 上へ
+
+          // 端では押し出しを強める
+          Body.setVelocity(body, {
+            x: Math.cos(fish.angle) * fish.speed * 1.35,
+            y: Math.sin(fish.angle) * fish.speed * 1.35
+          });
+
+          // すぐにランダム旋回されないよう抑制
+          fish.nextTurn = now + 350 + Math.random() * 300;
+          return;
+        }
+
         // たまにランダムに方向転換
         if (now >= fish.nextTurn) {
           fish.angle += (Math.random() - 0.5) * Math.PI * 0.9; // -~+81度
