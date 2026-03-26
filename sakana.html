@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>お絵描き水族館（物理エンジン版）</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      background: #e0f7fa;
+      font-family: sans-serif;
+      overflow: hidden;
+    }
+    #container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+    #canvas {
+      display: block;
+      background: #b3e5fc;
+    }
+    #toolbar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255,255,255,0.8);
+      padding: 10px;
+      border-radius: 8px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      max-width: 80%;
+      z-index: 10;
+    }
+    button {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 4px;
+      background: #2196f3;
+      color: white;
+      cursor: pointer;
+    }
+    button.active {
+      background: #f44336;
+    }
+    .stamp-btn {
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <canvas id="canvas"></canvas>
+    <div id="toolbar">
+      <button id="pen">ペン</button>
+      <button id="eraser">消しゴム</button>
+      <button id="clear">全部消す</button>
+      <button id="undo">1つ戻る</button>
+      <button id="copy">コピー</button>
+      <button id="paste">貼り付け</button>
+      <button class="stamp-btn" data-stamp="heart">❤️</button>
+      <button class="stamp-btn" data-stamp="star">⭐</button>
+      <button class="stamp-btn" data-stamp="triangle">🔺</button>
+      <button class="stamp-btn" data-stamp="square">⬛</button>
+    </div>
+  </div>
+
+  <script>
+    // Matter.js のエイリアス
+    const Engine = Matter.Engine,
+          Render = Matter.Render,
+          Runner = Matter.Runner,
+          Bodies = Matter.Bodies,
+          Body = Matter.Body,
+          Composite = Matter.Composite,
+          Mouse = Matter.Mouse,
+          MouseConstraint = Matter.MouseConstraint;
+
+    // --- グローバル変数 ---
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const container = document.getElementById('container');
+
+    let drawing = false;
+    let currentMode = 'pen';
+    let currentColor = '#000000';
+    let lineWidth = 4;
+    let eraserWidth = 20;
+
+    // 描画オブジェクトの管理（ID付き）
+    let nextShapeId = 1;
+    const shapes = new Map(); // shapeId -> { type, data, body? }
+
+    // Matter.js で動かしている魚（自前描画用）
+    const fishBodies = [];
+
+    // コピーした図形
+    let copiedShapeData = null;
+
+    // スタンプの定義
+    const stamps = {
+      heart: { type: 'text', value: '❤️', size: 40 },
+      star: { type: 'text', value: '⭐', size: 40 },
+      triangle: { type: 'polygon', points: [[0,-20], [-20,10], [20,10]] },
+      square: { type: 'rect', width: 30, height: 30 }
+    };
+
+    // --- Matter.js セットアップ ---
+    const engine = Engine.create({
+      gravity: { x: 0, y: 0 }
+    });
+
+    const render = Render.create({
+      canvas: canvas,
+      engine: engine,
+      options: {
+        width: container.clientWidth,
+        height: container.clientHeight,
+        wireframes: false,
+        background: '#b3e5fc'
+      }
+    });
+
+    // マウスでボディをドラッグするための制約
+    const mouse = Mouse.create(render.canvas);
+    const mouseConstraint = MouseConstraint.create(engine, {
+      mouse: mouse,
+      constraint: {
+        stiffness: 0.2,
+        render: { visible: false }
+      }
+    });
+    Composite.add(engine.world, mouseConstraint);
+    render.mouse = mouse;
+
+    // 物理世界の境界（画面外に出ないように）
+    const walls = [
+      Bodies.rectangle(render.options.width / 2, 0, render.options.width, 10, { isStatic: true }),
+      Bodies.rectangle(render.options.width / 2, render.options.height, render.options.width, 10, { isStatic: true }),
+      Bodies.rectangle(0, render.options.height / 2, 10, render.options.height, { isStatic: true }),
+      Bodies.rectangle(render.options.width, render.options.height / 2, 10, render.options.height, { isStatic: true })
+    ];
+    Composite.add(engine.world, walls);
+
+    // --- 初期化 ---
+    function init() {
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      // Canvas描画イベント
+      canvas.addEventListener('mousedown', startDrawing);
+      canvas.addEventListener('mousemove', draw);
+      canvas.addEventListener('mouseup', endDrawing);
+      canvas.addEventListener('mouseout', endDrawing);
+
+      // ツールバーボタン
+      document.getElementById('pen').addEventListener('click', () => setMode('pen'));
+      document.getElementById('eraser').addEventListener('click', () => setMode('eraser'));
+      document.getElementById('clear').addEventListener('click', clearAll);
+      document.getElementById('undo').addEventListener('click', undo);
+      document.getElementById('copy').addEventListener('click', copyLast);
+      document.getElementById('paste').addEventListener('click', paste);
+
+      document.querySelectorAll('.stamp-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const stampType = btn.dataset.stamp;
+          addStamp(stampType, { x: render.options.width / 2, y: render.options.height / 2 });
+        });
+      });
+
+      // 魚を数匹生成
+      for (let i = 0; i < 5; i++) {
+        fishBodies.push(createFish());
+      }
+
+      // Matter.js のレンダラとループ開始
+      Render.run(render);
+      Runner.run(Runner.create(), engine);
+
+      // カスタム描画ループ（図形の見た目をCanvasに描画）
+      requestAnimationFrame(drawShapes);
+    }
+
+    // --- Canvasサイズ調整 ---
+    function resizeCanvas() {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+
+      canvas.width = width;
+      canvas.height = height;
+      render.options.width = width;
+      render.options.height = height;
+      render.bounds.max.x = width;
+      render.bounds.max.y = height;
+
+      // 壁の位置も更新（簡易的には作り直し）
+      Composite.remove(engine.world, walls);
+      walls.length = 0;
+      walls.push(
+        Bodies.rectangle(width / 2, 0, width, 10, { isStatic: true }),
+        Bodies.rectangle(width / 2, height, width, 10, { isStatic: true }),
+        Bodies.rectangle(0, height / 2, 10, height, { isStatic: true }),
+        Bodies.rectangle(width, height / 2, 10, height, { isStatic: true })
+      );
+      Composite.add(engine.world, walls);
+    }
+
+    // --- 描画モード設定 ---
+    function setMode(mode) {
+      currentMode = mode;
+      document.querySelectorAll('#toolbar button').forEach(btn => btn.classList.remove('active'));
+      if (mode === 'pen') document.getElementById('pen').classList.add('active');
+      if (mode === 'eraser') document.getElementById('eraser').classList.add('active');
+    }
+
+    // --- 描画開始 ---
+    function startDrawing(e) {
+      drawing = true;
+      const pos = getMousePos(e);
+
+      if (currentMode === 'pen') {
+        const shapeId = nextShapeId++;
+        const shape = {
+          id: shapeId,
+          type: 'pen',
+          color: currentColor,
+          width: lineWidth,
+          points: [pos]
+        };
+        shapes.set(shapeId, shape);
+      } else if (currentMode === 'eraser') {
+        const shapeId = nextShapeId++;
+        const shape = {
+          id: shapeId,
+          type: 'eraser',
+          width: eraserWidth,
+          points: [pos]
+        };
+        shapes.set(shapeId, shape);
+      }
+    }
+
+    // --- 描画中 ---
+    function draw(e) {
+      if (!drawing) return;
+      const pos = getMousePos(e);
+
+      // 最後に追加した図形にポイントを追加
+      const lastShapeId = nextShapeId - 1;
+      const shape = shapes.get(lastShapeId);
+      if (shape && (shape.type === 'pen' || shape.type === 'eraser')) {
+        shape.points.push(pos);
+      }
+    }
+
+    // --- 描画終了 ---
+    function endDrawing() {
+      drawing = false;
+
+      const lastId = nextShapeId - 1;
+      const lastShape = shapes.get(lastId);
+      if (!lastShape) return;
+
+      if (lastShape.type === 'pen') {
+        buildPenColliders(lastShape);
+      } else if (lastShape.type === 'eraser') {
+        applyEraserToPens(lastShape);
+      }
+    }
+
+    // --- 図形の描画（Canvas描画ループ） ---
+    function drawShapes() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // クリック中（マウスドラッグ中）は魚の自律移動を弱めて、マウス操作と喧嘩しにくくする
+      if (!mouseConstraint.body) updateFishAuto(performance.now());
+
+      // Matter.js 側の描画が消えることがあるため、魚は自前描画する
+      fishBodies.forEach(drawFishBody);
+
+      shapes.forEach(shape => {
+        if (shape.type === 'pen') {
+          drawPenPath(shape);
+        } else if (shape.type === 'eraser') {
+          drawEraserPath(shape);
+        } else if (shape.type === 'stamp') {
+          drawStamp(shape);
+        }
+      });
+
+      requestAnimationFrame(drawShapes);
+    }
+
+    // --- ペン描画 ---
+    function drawPenPath(shape) {
+      ctx.beginPath();
+      ctx.strokeStyle = shape.color;
+      ctx.lineWidth = shape.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const points = shape.points;
+      if (points.length > 0) {
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          ctx.lineTo(points[i].x, points[i].y);
+        }
+      }
+      ctx.stroke();
+    }
+
+    // --- 消しゴム描画（見た目用） ---
+    function drawEraserPath(shape) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = shape.width;
+      ctx.lineCap = 'round';
+
+      const points = shape.points;
+      if (points.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          ctx.lineTo(points[i].x, points[i].y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    // --- 線の物理コライダー生成/削除（魚が貫通しないため） ---
+    function downsamplePoints(points, step) {
+      const stride = Math.max(1, Math.floor(step));
+      if (!Array.isArray(points) || points.length === 0) return [];
+      const res = [];
+      for (let i = 0; i < points.length; i += stride) res.push(points[i]);
+      // 先頭/末尾は残す（描画の当たり判定が薄くなるのを防ぐ）
+      if (res.length === 1 && points.length > 1) res.push(points[points.length - 1]);
+      return res;
+    }
+
+    function getBounds(points) {
+      if (!Array.isArray(points) || points.length === 0) return null;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of points) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
+      return { minX, minY, maxX, maxY };
+    }
+
+    function expandBounds(bounds, padding) {
+      if (!bounds) return null;
+      return {
+        minX: bounds.minX - padding,
+        minY: bounds.minY - padding,
+        maxX: bounds.maxX + padding,
+        maxY: bounds.maxY + padding
+      };
+    }
+
+    function removePenColliders(penShape) {
+      if (!penShape || !penShape.colliders) return;
+      penShape.colliders.forEach(body => {
+        Composite.remove(engine.world, body);
+      });
+      penShape.colliders.length = 0;
+    }
+
+    function buildPenColliders(penShape) {
+      if (!penShape || penShape.type !== 'pen') return;
+
+      // 既存コライダーを消して作り直す（復元時にも使える）
+      removePenColliders(penShape);
+      penShape.colliders = [];
+
+      const pts = penShape.points;
+      if (!Array.isArray(pts) || pts.length < 2) return;
+
+      const thickness = Math.max(2, penShape.width / 2);
+      // ペン点列がある程度密なら、この値を下げるほど壁が連続しやすい
+      const minSegmentLen = Math.max(1.5, thickness * 0.6); // コライダー数を抑えつつ隙間を減らす
+      const maxSegments = 240;
+
+      let segments = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const len = Math.hypot(dx, dy);
+        if (len < minSegmentLen) continue;
+
+        const angle = Math.atan2(dy, dx);
+        const mx = (p0.x + p1.x) / 2;
+        const my = (p0.y + p1.y) / 2;
+
+        const body = Bodies.rectangle(mx, my, len, thickness, {
+          isStatic: true,
+          friction: 0.0,
+          restitution: 0.0,
+          render: { visible: false }
+        });
+        Body.setAngle(body, angle);
+
+        penShape.colliders.push(body);
+        Composite.add(engine.world, body);
+
+        segments++;
+        if (segments >= maxSegments) break;
+      }
+    }
+
+    function snapshotPenShape(penShape) {
+      return {
+        id: penShape.id,
+        type: penShape.type,
+        color: penShape.color,
+        width: penShape.width,
+        points: JSON.parse(JSON.stringify(penShape.points))
+      };
+    }
+
+    function restorePenShapeSnapshot(penSnapshot) {
+      if (!penSnapshot || penSnapshot.type !== 'pen') return;
+      // 念のため同IDがあれば消す
+      const existing = shapes.get(penSnapshot.id);
+      if (existing) {
+        removePenColliders(existing);
+        shapes.delete(existing.id);
+      }
+
+      const pen = {
+        id: penSnapshot.id,
+        type: 'pen',
+        color: penSnapshot.color,
+        width: penSnapshot.width,
+        points: penSnapshot.points,
+        colliders: []
+      };
+      shapes.set(pen.id, pen);
+      buildPenColliders(pen);
+    }
+
+    function applyEraserToPens(eraserShape) {
+      if (!eraserShape || eraserShape.type !== 'eraser') return;
+
+      const eraserPts = downsamplePoints(eraserShape.points, 3);
+      const eraserBounds = expandBounds(getBounds(eraserPts), eraserShape.width / 2 + 2);
+      if (!eraserBounds) return;
+
+      const removedPens = [];
+      const penIdsToRemove = [];
+
+      // 集計してから削除（forEach 中の delete を避ける）
+      shapes.forEach(shape => {
+        if (shape.type !== 'pen') return;
+
+        const penSample = downsamplePoints(shape.points, 4);
+        const penBounds = getBounds(penSample);
+        if (!penBounds) return;
+
+        // まずはAABBで当たってるかを高速チェック
+        if (
+          penBounds.maxX < eraserBounds.minX ||
+          penBounds.minX > eraserBounds.maxX ||
+          penBounds.maxY < eraserBounds.minY ||
+          penBounds.minY > eraserBounds.maxY
+        ) {
+          return;
+        }
+
+        const hitDist = (eraserShape.width + shape.width) / 2;
+        const hitDist2 = hitDist * hitDist;
+
+        let hit = false;
+        for (const p of penSample) {
+          for (const e of eraserPts) {
+            const dx = p.x - e.x;
+            const dy = p.y - e.y;
+            if (dx * dx + dy * dy <= hitDist2) {
+              hit = true;
+              break;
+            }
+          }
+          if (hit) break;
+        }
+
+        if (hit) {
+          removedPens.push(snapshotPenShape(shape));
+          penIdsToRemove.push(shape.id);
+        }
+      });
+
+      penIdsToRemove.forEach(id => {
+        const pen = shapes.get(id);
+        if (!pen) return;
+        removePenColliders(pen);
+        shapes.delete(id);
+      });
+
+      eraserShape.removedPens = removedPens;
+    }
+
+    // --- 魚の自律移動（クリックしなくても泳ぎ回る） ---
+    function updateFishAuto(now) {
+      fishBodies.forEach(body => {
+        const fish = body && body._fish;
+        if (!fish) return;
+
+        // たまにランダムに方向転換
+        if (now >= fish.nextTurn) {
+          fish.angle += (Math.random() - 0.5) * Math.PI * 0.9; // -~+81度
+          fish.nextTurn = now + 600 + Math.random() * 1600;
+        }
+
+        const desiredX = Math.cos(fish.angle) * fish.speed;
+        const desiredY = Math.sin(fish.angle) * fish.speed;
+
+        // 速度が落ちてきたら強めに補正（衝突後も止まりにくい）
+        const v = body.velocity;
+        const speed = Math.hypot(v.x, v.y);
+        const mix = speed < fish.speed * 0.7 ? 0.12 : 0.04;
+
+        Body.setVelocity(body, {
+          x: v.x * (1 - mix) + desiredX * mix,
+          y: v.y * (1 - mix) + desiredY * mix
+        });
+      });
+    }
+
+    // --- 魚の描画（物理ボディを図形として描く） ---
+    function drawFishBody(body) {
+      const r = body && body.circleRadius;
+      if (typeof r !== 'number') return;
+
+      const fill = (body.render && body.render.fillStyle) ? body.render.fillStyle : 'hsl(190, 70%, 60%)';
+
+      ctx.save();
+      ctx.translate(body.position.x, body.position.y);
+      ctx.rotate(body.angle || 0);
+
+      // 胴体（円）
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 尾（簡易的な三角形）
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      ctx.beginPath();
+      ctx.moveTo(-r, 0);
+      ctx.lineTo(-r - r * 0.65, -r * 0.35);
+      ctx.lineTo(-r - r * 0.65, r * 0.35);
+      ctx.closePath();
+      ctx.fill();
+
+      // 目
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath();
+      ctx.arc(r * 0.35, -r * 0.2, Math.max(2, r * 0.12), 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    // --- スタンプ描画 ---
+    function drawStamp(shape) {
+      const { x, y, stampType } = shape;
+      const stamp = stamps[stampType];
+
+      ctx.save();
+      ctx.translate(x, y);
+
+      if (stamp.type === 'text') {
+        ctx.font = `${stamp.size}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(stamp.value, 0, 0);
+      } else if (stamp.type === 'polygon') {
+        ctx.beginPath();
+        ctx.moveTo(stamp.points[0][0], stamp.points[0][1]);
+        for (let i = 1; i < stamp.points.length; i++) {
+          ctx.lineTo(stamp.points[i][0], stamp.points[i][1]);
+        }
+        ctx.closePath();
+        ctx.fillStyle = '#ff5722';
+        ctx.fill();
+      } else if (stamp.type === 'rect') {
+        ctx.fillStyle = '#ffeb3b';
+        ctx.fillRect(-stamp.width/2, -stamp.height/2, stamp.width, stamp.height);
+      }
+
+      ctx.restore();
+    }
+
+    // --- スタンプ追加（物理ボディも作成） ---
+    function addStamp(stampType, pos) {
+      const shapeId = nextShapeId++;
+      const shape = {
+        id: shapeId,
+        type: 'stamp',
+        stampType: stampType,
+        x: pos.x,
+        y: pos.y
+      };
+      shapes.set(shapeId, shape);
+
+      // 物理ボディを作成して紐付け
+      const stamp = stamps[stampType];
+      let body;
+      if (stamp.type === 'rect') {
+        body = Bodies.rectangle(pos.x, pos.y, stamp.width, stamp.height, {
+          restitution: 0.8,
+          friction: 0.1,
+          render: { fillStyle: '#ffeb3b' }
+        });
+      } else {
+        // 多角形やテキストは簡易的に円として扱う
+        const radius = stamp.size ? stamp.size / 2 : 25;
+        body = Bodies.circle(pos.x, pos.y, radius, {
+          restitution: 0.8,
+          friction: 0.1,
+          render: { fillStyle: stamp.type === 'text' ? 'transparent' : '#ff5722' }
+        });
+      }
+      shape.body = body;
+      Composite.add(engine.world, body);
+    }
+
+    // --- 全消し ---
+    function clearAll() {
+      shapes.forEach(shape => {
+        if (shape.body) Composite.remove(engine.world, shape.body);
+        if (shape.colliders) {
+          shape.colliders.forEach(body => Composite.remove(engine.world, body));
+        }
+      });
+      shapes.clear();
+    }
+
+    // --- アンドゥ（最後の1筆を削除） ---
+    function undo() {
+      const lastId = nextShapeId - 1;
+      const shape = shapes.get(lastId);
+      if (shape) {
+        if (shape.body) Composite.remove(engine.world, shape.body);
+        if (shape.colliders) {
+          shape.colliders.forEach(body => Composite.remove(engine.world, body));
+        }
+
+        // 消しゴムで削除したペン線を復元（簡易復元）
+        if (shape.type === 'eraser' && Array.isArray(shape.removedPens)) {
+          shape.removedPens.forEach(penSnapshot => restorePenShapeSnapshot(penSnapshot));
+        }
+
+        shapes.delete(lastId);
+        nextShapeId--;
+      }
+    }
+
+    // --- 最後の図形をコピー ---
+    function copyLast() {
+      const lastId = nextShapeId - 1;
+      const shape = shapes.get(lastId);
+      if (shape) {
+        copiedShapeData = JSON.parse(JSON.stringify(shape));
+      }
+    }
+
+    // --- コピーした図形を貼り付け（中央付近） ---
+    function paste() {
+      if (!copiedShapeData) return;
+      const newShape = JSON.parse(JSON.stringify(copiedShapeData));
+      newShape.id = nextShapeId++;
+
+      // 位置を少しずらす
+      if (newShape.type === 'stamp') {
+        newShape.x += 20;
+        newShape.y += 20;
+        addStamp(newShape.stampType, { x: newShape.x, y: newShape.y });
+      } else {
+        // ペン・消しゴムは追加後に物理挙動を反映
+        shapes.set(newShape.id, newShape);
+
+        if (newShape.type === 'pen') {
+          buildPenColliders(newShape);
+        } else if (newShape.type === 'eraser') {
+          applyEraserToPens(newShape);
+        }
+      }
+    }
+
+    // --- マウス座標取得 ---
+    function getMousePos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    }
+
+    // --- 魚の生成（物理ボディ） ---
+    function createFish() {
+      const x = Math.random() * render.options.width;
+      const y = Math.random() * render.options.height;
+      const size = 20 + Math.random() * 10;
+
+      const body = Bodies.circle(x, y, size, {
+        restitution: 0.8,
+        friction: 0.01,
+        frictionAir: 0.01,
+        render: {
+          fillStyle: `hsl(${Math.random() * 360}, 70%, 60%)`
+        }
+      });
+
+      // 初期速度
+      const initAngle = Math.random() * Math.PI * 2;
+      const initSpeed = 2.5 + Math.random() * 2.5;
+      Body.setVelocity(body, {
+        x: Math.cos(initAngle) * initSpeed,
+        y: Math.sin(initAngle) * initSpeed
+      });
+
+      // 魚の自律移動パラメータ（向き・速度・次の方向転換時刻）
+      body._fish = {
+        angle: initAngle,
+        speed: initSpeed,
+        nextTurn: performance.now() + 600 + Math.random() * 1600
+      };
+
+      Composite.add(engine.world, body);
+      return body;
+    }
+
+    // 初期化実行
+    init();
+  </script>
+</body>
+</html>

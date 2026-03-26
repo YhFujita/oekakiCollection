@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>クリエイティブお絵かきアプリ</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: sans-serif;
+      background: #f8f8f8;
+      text-align: center;
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+    #canvas {
+      background: white;
+      border: 2px solid #ccc;
+      border-radius: 8px;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .tools {
+      margin: 10px 0;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+    button, input, select {
+      margin: 2px;
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #999;
+      background: white;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #eee;
+    }
+    button.active {
+      background: #ddd;
+      font-weight: bold;
+    }
+    #colorPicker {
+      vertical-align: middle;
+      height: 30px;
+      cursor: pointer;
+    }
+    .tool-group {
+      display: inline-block;
+      margin: 0 5px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 5px;
+      background: #f0f0f0;
+    }
+    .tool-group-label {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>クリエイティブお絵かきアプリ</h1>
+
+  <div class="tools">
+    <div class="tool-group">
+      <div class="tool-group-label">ブラシ</div>
+      <button id="penBtn">ペン</button>
+      <button id="thickPenBtn">太ペン</button>
+      <button id="sprayBtn">スプレー</button>
+      <button id="blurBtn">ぼかし</button>
+      <button id="gradientBtn">グラデーション</button>
+    </div>
+
+    <div class="tool-group">
+      <div class="tool-group-label">色・模様</div>
+      <input type="color" id="colorPicker" value="#000000">
+      <button id="patternFillBtn">パターン塗り</button>
+    </div>
+
+    <div class="tool-group">
+      <div class="tool-group-label">シェイプ</div>
+      <button id="rectBtn">四角</button>
+      <button id="circleBtn">丸</button>
+      <button id="triangleBtn">三角</button>
+      <button id="starBtn">星</button>
+    </div>
+
+    <div class="tool-group">
+      <div class="tool-group-label">テクスチャ</div>
+      <button id="woodBtn">木目</button>
+      <button id="clothBtn">布</button>
+      <button id="sandBtn">砂</button>
+    </div>
+
+    <div class="tool-group">
+      <div class="tool-group-label">スタンプ</div>
+      <button id="starStampBtn">星</button>
+      <button id="heartStampBtn">ハート</button>
+      <button id="cloudStampBtn">雲</button>
+      <button id="animalStampBtn">動物</button>
+    </div>
+
+    <div class="tool-group">
+      <div class="tool-group-label">その他</div>
+      <button id="eraserBtn">消しゴム</button>
+      <button id="clearBtn">ぜんぶ消す</button>
+    </div>
+  </div>
+
+  <canvas id="canvas" width="800" height="500"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const colorPicker = document.getElementById('colorPicker');
+
+    // ツールボタン
+    const penBtn = document.getElementById('penBtn');
+    const thickPenBtn = document.getElementById('thickPenBtn');
+    const sprayBtn = document.getElementById('sprayBtn');
+    const blurBtn = document.getElementById('blurBtn');
+    const gradientBtn = document.getElementById('gradientBtn');
+    const patternFillBtn = document.getElementById('patternFillBtn');
+    const rectBtn = document.getElementById('rectBtn');
+    const circleBtn = document.getElementById('circleBtn');
+    const triangleBtn = document.getElementById('triangleBtn');
+    const starBtn = document.getElementById('starBtn');
+    const woodBtn = document.getElementById('woodBtn');
+    const clothBtn = document.getElementById('clothBtn');
+    const sandBtn = document.getElementById('sandBtn');
+    const starStampBtn = document.getElementById('starStampBtn');
+    const heartStampBtn = document.getElementById('heartStampBtn');
+    const cloudStampBtn = document.getElementById('cloudStampBtn');
+    const animalStampBtn = document.getElementById('animalStampBtn');
+    const eraserBtn = document.getElementById('eraserBtn');
+    const clearBtn = document.getElementById('clearBtn');
+
+    // 状態
+    let isDrawing = false;
+    let lastX = 0;
+    let lastY = 0;
+    let currentColor = '#000000';
+    let currentTool = 'pen';
+    let startX = 0;
+    let startY = 0;
+
+    // パターン用キャンバス
+    const patternCanvas = document.createElement('canvas');
+    const patternCtx = patternCanvas.getContext('2d');
+    patternCanvas.width = 20;
+    patternCanvas.height = 20;
+
+    // テクスチャ用キャンバス
+    const textureCanvas = document.createElement('canvas');
+    const textureCtx = textureCanvas.getContext('2d');
+    textureCanvas.width = 200;
+    textureCanvas.height = 200;
+
+    // テクスチャ生成関数
+    function createWoodTexture() {
+      textureCtx.fillStyle = '#d2b48c';
+      textureCtx.fillRect(0, 0, 200, 200);
+      textureCtx.strokeStyle = '#8b7355';
+      textureCtx.lineWidth = 2;
+      for (let i = 0; i < 200; i += 10) {
+        textureCtx.beginPath();
+        textureCtx.moveTo(i, 0);
+        textureCtx.lineTo(i, 200);
+        textureCtx.stroke();
+      }
+      return textureCtx.createPattern(textureCanvas, 'repeat');
+    }
+
+    function createClothTexture() {
+      textureCtx.fillStyle = '#f0f0f0';
+      textureCtx.fillRect(0, 0, 200, 200);
+      textureCtx.strokeStyle = '#d0d0d0';
+      textureCtx.lineWidth = 1;
+      for (let x = 0; x < 200; x += 8) {
+        for (let y = 0; y < 200; y += 8) {
+          textureCtx.strokeRect(x, y, 4, 4);
+        }
+      }
+      return textureCtx.createPattern(textureCanvas, 'repeat');
+    }
+
+    function createSandTexture() {
+      textureCtx.fillStyle = '#f4d7a7';
+      textureCtx.fillRect(0, 0, 200, 200);
+      for (let i = 0; i < 200; i++) {
+        const x = Math.random() * 200;
+        const y = Math.random() * 200;
+        const r = Math.random() * 2;
+        textureCtx.fillStyle = `rgba(200,180,150,${Math.random() * 0.5})`;
+        textureCtx.beginPath();
+        textureCtx.arc(x, y, r, 0, Math.PI * 2);
+        textureCtx.fill();
+      }
+      return textureCtx.createPattern(textureCanvas, 'repeat');
+    }
+
+    // パターン生成
+    function createPattern() {
+      patternCtx.fillStyle = '#fff';
+      patternCtx.fillRect(0, 0, 20, 20);
+      patternCtx.fillStyle = currentColor;
+      patternCtx.fillRect(0, 0, 10, 10);
+      patternCtx.fillRect(10, 10, 10, 10);
+      return patternCtx.createPattern(patternCanvas, 'repeat');
+    }
+
+    // グラデーション色生成
+    function getGradientColor(step = 0) {
+      const hue = (step * 5) % 360;
+      return `hsl(${hue}, 80%, 50%)`;
+    }
+    let gradientStep = 0;
+
+    // 描画開始
+    function startDrawing(e) {
+      isDrawing = true;
+      [lastX, lastY] = getPosition(e);
+      [startX, startY] = [lastX, lastY];
+
+      if (currentTool === 'patternFill') {
+        ctx.fillStyle = createPattern();
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        isDrawing = false;
+      }
+    }
+
+    // 描画中
+    function draw(e) {
+      if (!isDrawing) return;
+      e.preventDefault();
+
+      const [x, y] = getPosition(e);
+
+      switch (currentTool) {
+        case 'pen':
+        case 'thickPen':
+        case 'eraser':
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
+          ctx.lineTo(x, y);
+          if (currentTool === 'pen') {
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = 3;
+          } else if (currentTool === 'thickPen') {
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = 10;
+          } else if (currentTool === 'eraser') {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 20;
+          }
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+          break;
+
+        case 'spray':
+          ctx.fillStyle = currentColor;
+          for (let i = 0; i < 10; i++) {
+            const dx = Math.random() * 20 - 10;
+            const dy = Math.random() * 20 - 10;
+            const r = Math.random() * 2 + 1;
+            ctx.beginPath();
+            ctx.arc(x + dx, y + dy, r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          break;
+
+        case 'blur':
+          ctx.globalAlpha = 0.3;
+          ctx.strokeStyle = currentColor;
+          ctx.lineWidth = 10;
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+          break;
+
+        case 'gradient':
+          gradientStep++;
+          ctx.strokeStyle = getGradientColor(gradientStep);
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          break;
+
+        case 'wood':
+        case 'cloth':
+        case 'sand':
+          let pattern;
+          if (currentTool === 'wood') pattern = createWoodTexture();
+          else if (currentTool === 'cloth') pattern = createClothTexture();
+          else if (currentTool === 'sand') pattern = createSandTexture();
+          ctx.strokeStyle = pattern;
+          ctx.lineWidth = 10;
+          ctx.beginPath();
+          ctx.moveTo(lastX, lastY);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          break;
+
+        case 'rect':
+        case 'circle':
+        case 'triangle':
+        case 'star':
+          redrawCanvas();
+          ctx.strokeStyle = currentColor;
+          ctx.lineWidth = 3;
+          ctx.fillStyle = currentColor + '80'; // 半透明
+          if (currentTool === 'rect') {
+            ctx.strokeRect(startX, startY, x - startX, y - startY);
+            ctx.fillRect(startX, startY, x - startX, y - startY);
+          } else if (currentTool === 'circle') {
+            const radius = Math.sqrt((x - startX) ** 2 + (y - startY) ** 2);
+            ctx.beginPath();
+            ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fill();
+          } else if (currentTool === 'triangle') {
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(x, y);
+            ctx.lineTo(startX * 2 - x, y);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.fill();
+          } else if (currentTool === 'star') {
+            drawStar(startX, startY, Math.sqrt((x - startX) ** 2 + (y - startY) ** 2));
+          }
+          break;
+      }
+
+      [lastX, lastY] = [x, y];
+    }
+
+    // 星を描く関数
+    function drawStar(cx, cy, radius) {
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const angle = (i * Math.PI) / 5;
+        const r = i % 2 === 0 ? radius : radius / 2;
+        const x = cx + Math.cos(angle - Math.PI / 2) * r;
+        const y = cy + Math.sin(angle - Math.PI / 2) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+    }
+
+    // スタンプ描画
+    function drawStamp(type, x, y) {
+      const size = 30;
+      ctx.fillStyle = currentColor;
+      ctx.strokeStyle = currentColor;
+      ctx.lineWidth = 2;
+
+      switch (type) {
+        case 'star':
+          drawStar(x, y, size / 2);
+          break;
+        case 'heart':
+          ctx.beginPath();
+          ctx.moveTo(x, y + size / 4);
+          ctx.bezierCurveTo(
+            x - size / 2, y - size / 2,
+            x - size, y + size / 2,
+            x, y + size
+          );
+          ctx.bezierCurveTo(
+            x + size, y + size / 2,
+            x + size / 2, y - size / 2,
+            x, y + size / 4
+          );
+          ctx.closePath();
+          ctx.fill();
+          break;
+        case 'cloud':
+          ctx.beginPath();
+          ctx.arc(x - size / 3, y, size / 3, 0, Math.PI * 2);
+          ctx.arc(x + size / 3, y, size / 3, 0, Math.PI * 2);
+          ctx.arc(x, y, size / 3, 0, Math.PI * 2);
+          ctx.arc(x - size / 6, y - size / 6, size / 3, 0, Math.PI * 2);
+          ctx.arc(x + size / 6, y - size / 6, size / 3, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        case 'animal':
+          // 簡単な猫の顔
+          ctx.fillStyle = '#ffa500';
+          ctx.beginPath();
+          ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#000';
+          ctx.beginPath();
+          ctx.arc(x - size / 4, y - size / 8, size / 8, 0, Math.PI * 2);
+          ctx.arc(x + size / 4, y - size / 8, size / 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(x, y + size / 8, size / 8, 0, Math.PI);
+          ctx.stroke();
+          break;
+      }
+    }
+
+    // 描画終了
+    function stopDrawing() {
+      isDrawing = false;
+      if (['rect', 'circle', 'triangle', 'star'].includes(currentTool)) {
+        // シェイプ確定
+        ctx.save();
+        redrawCanvas();
+        ctx.restore();
+      }
+    }
+
+    // マウス/タッチ座標を取得
+    function getPosition(e) {
+      const rect = canvas.getBoundingClientRect();
+      let clientX, clientY;
+
+      if (e.type.includes('touch')) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+
+      return [
+        clientX - rect.left,
+        clientY - rect.top
+      ];
+    }
+
+    // キャンバス再描画（シェイプ描画用）
+    let savedImageData;
+    function saveCanvas() {
+      savedImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+    function redrawCanvas() {
+      if (savedImageData) {
+        ctx.putImageData(savedImageData, 0, 0);
+      }
+    }
+
+    // 色変更
+    colorPicker.addEventListener('input', (e) => {
+      currentColor = e.target.value;
+    });
+
+    // ツール切り替え
+    function setActiveTool(tool, btn) {
+      currentTool = tool;
+      document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (['rect', 'circle', 'triangle', 'star'].includes(tool)) {
+        saveCanvas();
+      }
+    }
+
+    penBtn.addEventListener('click', () => setActiveTool('pen', penBtn));
+    thickPenBtn.addEventListener('click', () => setActiveTool('thickPen', thickPenBtn));
+    sprayBtn.addEventListener('click', () => setActiveTool('spray', sprayBtn));
+    blurBtn.addEventListener('click', () => setActiveTool('blur', blurBtn));
+    gradientBtn.addEventListener('click', () => setActiveTool('gradient', gradientBtn));
+    patternFillBtn.addEventListener('click', () => setActiveTool('patternFill', patternFillBtn));
+    rectBtn.addEventListener('click', () => setActiveTool('rect', rectBtn));
+    circleBtn.addEventListener('click', () => setActiveTool('circle', circleBtn));
+    triangleBtn.addEventListener('click', () => setActiveTool('triangle', triangleBtn));
+    starBtn.addEventListener('click', () => setActiveTool('star', starBtn));
+    woodBtn.addEventListener('click', () => setActiveTool('wood', woodBtn));
+    clothBtn.addEventListener('click', () => setActiveTool('cloth', clothBtn));
+    sandBtn.addEventListener('click', () => setActiveTool('sand', sandBtn));
+    eraserBtn.addEventListener('click', () => setActiveTool('eraser', eraserBtn));
+
+    // スタンプ
+    function handleStamp(type, btn) {
+      setActiveTool('stamp', btn);
+      canvas.addEventListener('click', stampOnce);
+      function stampOnce(e) {
+        const [x, y] = getPosition(e);
+        drawStamp(type, x, y);
+        canvas.removeEventListener('click', stampOnce);
+        setActiveTool('pen', penBtn); // スタンプ後はペンに戻す
+      }
+    }
+
+    starStampBtn.addEventListener('click', () => handleStamp('star', starStampBtn));
+    heartStampBtn.addEventListener('click', () => handleStamp('heart', heartStampBtn));
+    cloudStampBtn.addEventListener('click', () => handleStamp('cloud', cloudStampBtn));
+    animalStampBtn.addEventListener('click', () => handleStamp('animal', animalStampBtn));
+
+    // クリア
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    });
+
+    // イベントリスナー
+    canvas.addEventListener('mousedown', startDrawing);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDrawing);
+    canvas.addEventListener('mouseout', stopDrawing);
+
+    canvas.addEventListener('touchstart', startDrawing);
+    canvas.addEventListener('touchmove', draw);
+    canvas.addEventListener('touchend', stopDrawing);
+
+    // 初期状態
+    penBtn.classList.add('active');
+  </script>
+</body>
+</html>
