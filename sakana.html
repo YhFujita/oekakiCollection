@@ -222,12 +222,20 @@
 
       if (currentMode === 'pen') {
         const shapeId = nextShapeId++;
+
+        // ペン1筆ごとにグラデーション色相を変える（カラーピッカーがないため固定/ランダムで賄う）
+        const hueA = Math.random() * 360;
+        const hueB = (hueA + 120 + Math.random() * 120) % 360;
+
         const shape = {
           id: shapeId,
           type: 'pen',
           color: currentColor,
           width: lineWidth,
-          points: [pos]
+          points: [pos],
+          gradient: true,
+          hueA: hueA,
+          hueB: hueB
         };
         shapes.set(shapeId, shape);
       } else if (currentMode === 'eraser') {
@@ -296,17 +304,62 @@
     // --- ペン描画 ---
     function drawPenPath(shape) {
       ctx.beginPath();
-      ctx.strokeStyle = shape.color;
       ctx.lineWidth = shape.width;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
       const points = shape.points;
-      if (points.length > 0) {
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-          ctx.lineTo(points[i].x, points[i].y);
+
+      if (!Array.isArray(points) || points.length === 0) return;
+
+      // グラデーションペン：線分ごとに色相を変えて描画
+      if (shape.gradient) {
+        const hueA = typeof shape.hueA === 'number' ? shape.hueA : 0;
+        const hueB = typeof shape.hueB === 'number' ? shape.hueB : 180;
+
+        // 再描画コストを抑えるため、点列を間引き
+        const maxSamples = 450;
+        const stride = Math.max(1, Math.ceil(points.length / maxSamples));
+        const sampled = [];
+        for (let i = 0; i < points.length; i += stride) sampled.push(points[i]);
+        if (sampled.length === 0) sampled.push(points[0]);
+        if (sampled[sampled.length - 1] !== points[points.length - 1]) sampled.push(points[points.length - 1]);
+
+        // 総距離で t を作る（色相を線に沿って変える）
+        const segDists = [];
+        let totalDist = 0;
+        for (let i = 1; i < sampled.length; i++) {
+          const dx = sampled[i].x - sampled[i - 1].x;
+          const dy = sampled[i].y - sampled[i - 1].y;
+          const d = Math.hypot(dx, dy);
+          segDists.push(d);
+          totalDist += d;
         }
+
+        let acc = 0;
+        for (let i = 1; i < sampled.length; i++) {
+          const d = segDists[i - 1] || 0;
+          const nextAcc = acc + d;
+          const t = totalDist > 0 ? nextAcc / totalDist : 0;
+          const hue = hueA + (hueB - hueA) * t;
+
+          ctx.strokeStyle = `hsl(${hue}, 70%, 55%)`;
+          ctx.beginPath();
+          ctx.moveTo(sampled[i - 1].x, sampled[i - 1].y);
+          ctx.lineTo(sampled[i].x, sampled[i].y);
+          ctx.stroke();
+
+          acc = nextAcc;
+        }
+        return;
+      }
+
+      // 通常ペン（旧データ用）
+      ctx.strokeStyle = shape.color;
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
       }
       ctx.stroke();
     }
@@ -419,7 +472,10 @@
         type: penShape.type,
         color: penShape.color,
         width: penShape.width,
-        points: JSON.parse(JSON.stringify(penShape.points))
+        points: JSON.parse(JSON.stringify(penShape.points)),
+        gradient: penShape.gradient,
+        hueA: penShape.hueA,
+        hueB: penShape.hueB
       };
     }
 
@@ -438,7 +494,10 @@
         color: penSnapshot.color,
         width: penSnapshot.width,
         points: penSnapshot.points,
-        colliders: []
+        colliders: [],
+        gradient: penSnapshot.gradient,
+        hueA: penSnapshot.hueA,
+        hueB: penSnapshot.hueB
       };
       shapes.set(pen.id, pen);
       buildPenColliders(pen);
