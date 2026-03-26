@@ -275,6 +275,8 @@
         buildPenColliders(lastShape);
       } else if (lastShape.type === 'eraser') {
         applyEraserToPens(lastShape);
+        // 消しゴムの見た目が残ると「背景が白くなる」ので、終了時は非表示にする
+        lastShape.hideVisual = true;
       }
     }
 
@@ -366,7 +368,10 @@
 
     // --- 消しゴム描画（見た目用） ---
     function drawEraserPath(shape) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      if (shape && shape.hideVisual) return;
+
+      // 背景の水色 (#b3e5fc) と同系色で描く（白くならないようにする）
+      ctx.strokeStyle = 'rgba(179,229,252,0.95)';
       ctx.lineWidth = shape.width;
       ctx.lineCap = 'round';
 
