@@ -88,6 +88,7 @@
     let currentColor = '#000000';
     let lineWidth = 4;
     let eraserWidth = 20;
+    let currentStampType = null;
 
     // 描画オブジェクトの管理（ID付き）
     let nextShapeId = 1;
@@ -166,7 +167,8 @@
       document.querySelectorAll('.stamp-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           const stampType = btn.dataset.stamp;
-          addStamp(stampType, { x: render.options.width / 2, y: render.options.height / 2 });
+          currentStampType = stampType;
+          setMode('stamp');
         });
       });
 
@@ -213,6 +215,10 @@
       document.querySelectorAll('#toolbar button').forEach(btn => btn.classList.remove('active'));
       if (mode === 'pen') document.getElementById('pen').classList.add('active');
       if (mode === 'eraser') document.getElementById('eraser').classList.add('active');
+      if (mode === 'stamp' && currentStampType) {
+        const stampBtn = document.querySelector(`#toolbar .stamp-btn[data-stamp="${currentStampType}"]`);
+        if (stampBtn) stampBtn.classList.add('active');
+      }
     }
 
     // --- 描画開始 ---
@@ -247,6 +253,21 @@
           points: [pos]
         };
         shapes.set(shapeId, shape);
+      } else if (currentMode === 'stamp') {
+        if (!currentStampType) return;
+        const shapeId = nextShapeId++;
+        // 描画中は物理ボディを作らずプレビューのみ（マウスアップ時に確定）
+        const shape = {
+          id: shapeId,
+          type: 'stamp',
+          stampType: currentStampType,
+          x: pos.x,
+          y: pos.y,
+          scale: 1,
+          dragStart: pos,
+          body: null
+        };
+        shapes.set(shapeId, shape);
       }
     }
 
@@ -260,6 +281,18 @@
       const shape = shapes.get(lastShapeId);
       if (shape && (shape.type === 'pen' || shape.type === 'eraser')) {
         shape.points.push(pos);
+      } else if (shape && shape.type === 'stamp') {
+        // 右下ドラッグ=大きく、左上ドラッグ=小さく
+        const start = shape.dragStart || { x: shape.x, y: shape.y };
+        const dx = pos.x - start.x;
+        const dy = pos.y - start.y;
+
+        // 45度方向（dx+dy）の符号で大小を切り替える
+        const base = 250; // 大きさの効き具合
+        const raw = 1 + (dx + dy) / base;
+        const scale = Math.max(0.25, Math.min(3.0, raw));
+
+        shape.scale = scale;
       }
     }
 
@@ -277,6 +310,8 @@
         applyEraserToPens(lastShape);
         // 消しゴムの見た目が残ると「背景が白くなる」ので、終了時は非表示にする
         lastShape.hideVisual = true;
+      } else if (lastShape.type === 'stamp') {
+        finalizeStampShape(lastShape);
       }
     }
 
@@ -664,64 +699,89 @@
     function drawStamp(shape) {
       const { x, y, stampType } = shape;
       const stamp = stamps[stampType];
+      const scale = typeof shape.scale === 'number' ? shape.scale : 1;
 
       ctx.save();
       ctx.translate(x, y);
 
       if (stamp.type === 'text') {
-        ctx.font = `${stamp.size}px Arial`;
+        ctx.font = `${stamp.size * scale}px Arial`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(stamp.value, 0, 0);
       } else if (stamp.type === 'polygon') {
         ctx.beginPath();
-        ctx.moveTo(stamp.points[0][0], stamp.points[0][1]);
+        ctx.moveTo(stamp.points[0][0] * scale, stamp.points[0][1] * scale);
         for (let i = 1; i < stamp.points.length; i++) {
-          ctx.lineTo(stamp.points[i][0], stamp.points[i][1]);
+          ctx.lineTo(stamp.points[i][0] * scale, stamp.points[i][1] * scale);
         }
         ctx.closePath();
         ctx.fillStyle = '#ff5722';
         ctx.fill();
       } else if (stamp.type === 'rect') {
         ctx.fillStyle = '#ffeb3b';
-        ctx.fillRect(-stamp.width/2, -stamp.height/2, stamp.width, stamp.height);
+        const w = stamp.width * scale;
+        const h = stamp.height * scale;
+        ctx.fillRect(-w / 2, -h / 2, w, h);
       }
 
       ctx.restore();
     }
 
+    function buildStampBodyForShape(stampShape) {
+      const stamp = stamps[stampShape.stampType];
+      const scale = typeof stampShape.scale === 'number' ? stampShape.scale : 1;
+      const pos = { x: stampShape.x, y: stampShape.y };
+
+      if (!stamp) return null;
+
+      if (stamp.type === 'rect') {
+        return Bodies.rectangle(pos.x, pos.y, stamp.width * scale, stamp.height * scale, {
+          isStatic: true,
+          restitution: 0.8,
+          friction: 0.1,
+          render: { fillStyle: '#ffeb3b' }
+        });
+      }
+
+      // 多角形やテキストは従来どおり円コライダーで簡易表現
+      let baseRadius = stamp.size ? stamp.size / 2 : 25;
+      if (stamp.type === 'polygon' && Array.isArray(stamp.points) && stamp.points.length > 0) {
+        baseRadius = Math.max(...stamp.points.map(p => Math.hypot(p[0], p[1])));
+      }
+
+      return Bodies.circle(pos.x, pos.y, baseRadius * scale, {
+        isStatic: true,
+        restitution: 0.8,
+        friction: 0.1,
+        render: { fillStyle: stamp.type === 'text' ? 'transparent' : '#ff5722' }
+      });
+    }
+
+    function finalizeStampShape(stampShape) {
+      if (!stampShape || stampShape.body) return;
+      const body = buildStampBodyForShape(stampShape);
+      if (!body) return;
+      stampShape.body = body;
+      Composite.add(engine.world, body);
+    }
+
     // --- スタンプ追加（物理ボディも作成） ---
-    function addStamp(stampType, pos) {
+    function addStamp(stampType, pos, scale = 1) {
       const shapeId = nextShapeId++;
       const shape = {
         id: shapeId,
         type: 'stamp',
         stampType: stampType,
         x: pos.x,
-        y: pos.y
+        y: pos.y,
+        scale: scale,
+        dragStart: null,
+        body: null
       };
       shapes.set(shapeId, shape);
 
-      // 物理ボディを作成して紐付け
-      const stamp = stamps[stampType];
-      let body;
-      if (stamp.type === 'rect') {
-        body = Bodies.rectangle(pos.x, pos.y, stamp.width, stamp.height, {
-          restitution: 0.8,
-          friction: 0.1,
-          render: { fillStyle: '#ffeb3b' }
-        });
-      } else {
-        // 多角形やテキストは簡易的に円として扱う
-        const radius = stamp.size ? stamp.size / 2 : 25;
-        body = Bodies.circle(pos.x, pos.y, radius, {
-          restitution: 0.8,
-          friction: 0.1,
-          render: { fillStyle: stamp.type === 'text' ? 'transparent' : '#ff5722' }
-        });
-      }
-      shape.body = body;
-      Composite.add(engine.world, body);
+      finalizeStampShape(shape);
     }
 
     // --- 全消し ---
@@ -774,7 +834,8 @@
       if (newShape.type === 'stamp') {
         newShape.x += 20;
         newShape.y += 20;
-        addStamp(newShape.stampType, { x: newShape.x, y: newShape.y });
+        const scale = typeof newShape.scale === 'number' ? newShape.scale : 1;
+        addStamp(newShape.stampType, { x: newShape.x, y: newShape.y }, scale);
       } else {
         // ペン・消しゴムは追加後に物理挙動を反映
         shapes.set(newShape.id, newShape);
